@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         LemeHost Docker专用面板 (左上角版)
+// @name         LemeHost 控制面板 (右下角版)
 // @namespace    http://tampermonkey.net/
-// @version      2.1
-// @description  将面板移至左上角，防止在Docker/VNC环境中被遮挡
+// @version      2.2
+// @description  右下角悬浮面板，支持手动点击续期、自动监控开关、实时状态显示
 // @author       You
 // @match        https://lemehost.com/server/*/free-plan*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=lemehost.com
@@ -14,68 +14,71 @@
 
     // ================= 配置区域 =================
     const CONFIG = {
-        threshold: 300, // 5分钟
-        checkInterval: 2000 // 2秒检查一次
+        threshold: 300, // 阈值：5分钟 (300秒)
+        checkInterval: 2000 // 检查频率：2秒
     };
     
-    let isAutoEnabled = true;
-    let isProcessing = false;
+    // 状态变量
+    let isAutoEnabled = true; // 默认开启自动
+    let isProcessing = false; // 是否正在处理中
 
-    // ================= UI 创建区域 (CSS 已修改) =================
+    // ================= UI 创建区域 =================
     function createPanel() {
-        // 先删除可能存在的旧面板（防止重复）
+        // 删除旧面板（防止重复）
         const oldPanel = document.getElementById('leme-control-panel');
         if (oldPanel) oldPanel.remove();
 
         const div = document.createElement('div');
         div.id = 'leme-control-panel';
         
-        // ⚠️ 修改点：改为左上角，背景色加深，层级调到最高
+        // ✨ 这里改回了右下角
         div.style.cssText = `
             position: fixed !important;
-            top: 10px;
-            left: 10px;
-            width: 240px;
-            background: rgba(0, 0, 0, 0.95);
+            bottom: 20px;
+            right: 20px;
+            width: 260px;
+            background: rgba(0, 0, 0, 0.85); /* 半透明黑色背景 */
             color: white;
-            padding: 12px;
-            border-radius: 4px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.8);
-            font-family: sans-serif;
-            z-index: 2147483647; /* 最大的 Z-Index */
-            font-size: 13px;
-            border: 2px solid #00ff00; /* 加个绿框让你更容易看见 */
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            font-family: Arial, sans-serif;
+            z-index: 2147483647; /* 保持最顶层，防遮挡 */
+            font-size: 14px;
+            border: 1px solid #444;
         `;
 
         div.innerHTML = `
-            <div style="border-bottom: 1px solid #555; padding-bottom: 5px; margin-bottom: 8px; font-weight: bold; color: #4db8ff;">
-                🚀 LemeHost 面板 (Docker版)
+            <div style="border-bottom: 1px solid #555; padding-bottom: 8px; margin-bottom: 10px; font-weight: bold; color: #4db8ff;">
+                🚀 LemeHost 控制台
             </div>
             <div style="margin-bottom: 5px;">
                 <span>⏳ 倒计时: </span>
                 <span id="leme-display-time" style="color: #ffcc00; font-weight: bold;">检测中...</span>
             </div>
-            <div style="margin-bottom: 10px;">
+            <div style="margin-bottom: 15px;">
                 <span>📊 状态: </span>
-                <span id="leme-status-text" style="color: #00ff00;">启动中</span>
+                <span id="leme-status-text" style="color: #00ff00;">监控中...</span>
             </div>
             
             <button id="leme-manual-btn" style="
                 width: 100%;
-                padding: 6px; 
+                padding: 10px; 
                 background: #28a745; 
                 border: none; 
                 color: white; 
-                border-radius: 3px; 
+                border-radius: 4px; 
                 cursor: pointer;
                 font-weight: bold;
-                margin-bottom: 8px;">
+                font-size: 14px;
+                margin-bottom: 10px;">
                 ⚡ 立即手动续期
             </button>
 
-            <div>
-                <label style="cursor: pointer; user-select: none;">
-                    <input type="checkbox" id="leme-auto-switch" checked> 开启自动续期
+            <div style="margin-top: 5px; font-size: 13px;">
+                <label style="cursor: pointer; user-select: none; display: flex; align-items: center;">
+                    <input type="checkbox" id="leme-auto-switch" checked style="margin-right: 6px;"> 
+                    启用自动续期 (< 5分钟)
                 </label>
             </div>
         `;
@@ -85,7 +88,7 @@
         // 绑定事件
         document.getElementById('leme-manual-btn').addEventListener('click', () => {
             updateStatus('正在手动执行...', 'orange');
-            executeRenew(true);
+            executeRenew(true); // 传入 true 表示手动强制
         });
 
         document.getElementById('leme-auto-switch').addEventListener('change', (e) => {
@@ -94,6 +97,7 @@
         });
     }
 
+    // 更新面板显示的文字
     function updateDisplayTime(text) {
         const el = document.getElementById('leme-display-time');
         if (el) el.innerText = text;
@@ -107,10 +111,13 @@
         }
     }
 
-    // ================= 核心逻辑 =================
+    // ================= 核心逻辑区域 =================
+
+    // 1. 查找按钮
     function findRenewButton() {
         const buttons = document.getElementsByTagName('button');
         for (let btn of buttons) {
+            // 匹配 type="submit" 且包含 Extend time 文字
             if (btn.type === 'submit' && btn.innerText.includes('Extend time')) {
                 return btn;
             }
@@ -118,6 +125,7 @@
         return null;
     }
 
+    // 2. 解析时间
     function parseTime(timeStr) {
         if (!timeStr) return 99999;
         const parts = timeStr.trim().split(':').map(Number);
@@ -126,47 +134,71 @@
         return 99999;
     }
 
+    // 3. 执行续期动作
     function executeRenew(isManual = false) {
-        if (isProcessing && !isManual) return;
+        if (isProcessing && !isManual) return; // 如果正在处理且非手动，则跳过
 
         const btn = findRenewButton();
         if (!btn) {
-            updateStatus('❌ 没找到按钮!', 'red');
+            updateStatus('❌ 未找到按钮!', 'red');
+            console.error('LemeHost 脚本: 未找到续期按钮');
             return;
         }
 
         isProcessing = true;
+        
+        // 视觉反馈
+        const originalText = btn.innerText;
+        const originalColor = btn.style.backgroundColor;
+        
         btn.style.backgroundColor = '#ff4444';
-        btn.innerText = '点击中...';
+        btn.innerText = '脚本处理中...';
         updateStatus('⚡ 正在点击...', 'orange');
 
+        // 点击
         setTimeout(() => {
             btn.click();
+            console.log('✅ 已触发点击事件');
             updateStatus('✅ 点击完成', '#00ff00');
+            
+            // 5秒后重置状态
             setTimeout(() => { 
                 isProcessing = false; 
-                updateStatus('监控中...', '#00ff00');
+                // 恢复按钮样式（如果页面没刷新的话）
+                try {
+                    btn.style.backgroundColor = originalColor;
+                    btn.innerText = originalText;
+                } catch(e) {}
+                
+                if(!isAutoEnabled) updateStatus('自动已暂停', '#aaa');
+                else updateStatus('监控中...', '#00ff00');
             }, 5000);
         }, 500);
     }
 
+    // 4. 主循环
     function mainLoop() {
         const timerSpan = document.getElementById('countdown-free-plan');
+        
         if (!timerSpan) {
-            updateDisplayTime('未找到倒计时');
+            updateDisplayTime('未检测到倒计时');
             return;
         }
+
         const timeText = timerSpan.innerText.trim();
-        updateDisplayTime(timeText);
+        updateDisplayTime(timeText); // 更新面板时间显示
 
         if (!isAutoEnabled) return;
 
         const remainingSeconds = parseTime(timeText);
+        
         if (remainingSeconds < CONFIG.threshold && remainingSeconds > 0) {
-            executeRenew(false);
+            console.log(`⏱️ 触发自动续期! 剩余: ${remainingSeconds}秒`);
+            executeRenew(false); 
         }
     }
 
+    // ================= 启动 =================
     setTimeout(() => {
         createPanel();
         setInterval(mainLoop, CONFIG.checkInterval);

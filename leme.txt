@@ -1,0 +1,196 @@
+// ==UserScript==
+// @name         LemeHost 强力控制面板 (带手动触发)
+// @namespace    http://tampermonkey.net/
+// @version      2.0
+// @description  右下角悬浮面板，支持手动点击续期、自动监控开关、实时状态显示
+// @author       You
+// @match        https://lemehost.com/server/*/free-plan*
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=lemehost.com
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // ================= 配置区域 =================
+    const CONFIG = {
+        threshold: 300, // 阈值：5分钟 (300秒)
+        checkInterval: 2000 // 检查频率：2秒
+    };
+    
+    // 状态变量
+    let isAutoEnabled = true; // 默认开启自动
+    let isProcessing = false; // 是否正在处理中
+
+    // ================= UI 创建区域 =================
+    function createPanel() {
+        const div = document.createElement('div');
+        div.id = 'leme-control-panel';
+        div.style.cssText = `
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 260px;
+            background: rgba(0, 0, 0, 0.85);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            font-family: Arial, sans-serif;
+            z-index: 99999;
+            font-size: 14px;
+            border: 1px solid #444;
+        `;
+
+        div.innerHTML = `
+            <div style="border-bottom: 1px solid #555; padding-bottom: 8px; margin-bottom: 10px; font-weight: bold; color: #4db8ff;">
+                🚀 LemeHost 控制台
+            </div>
+            <div style="margin-bottom: 5px;">
+                <span>⏳ 页面倒计时: </span>
+                <span id="leme-display-time" style="color: #ffcc00; font-weight: bold;">--:--:--</span>
+            </div>
+            <div style="margin-bottom: 15px;">
+                <span>📊 脚本状态: </span>
+                <span id="leme-status-text" style="color: #00ff00;">监控中...</span>
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                <button id="leme-manual-btn" style="
+                    flex: 1; 
+                    padding: 8px; 
+                    background: #28a745; 
+                    border: none; 
+                    color: white; 
+                    border-radius: 4px; 
+                    cursor: pointer;
+                    font-weight: bold;">
+                    ⚡ 立即续期
+                </button>
+            </div>
+
+            <div style="margin-top: 5px;">
+                <label style="cursor: pointer; user-select: none;">
+                    <input type="checkbox" id="leme-auto-switch" checked> 启用自动续期 (< 5分钟)
+                </label>
+            </div>
+        `;
+
+        document.body.appendChild(div);
+
+        // 绑定事件
+        document.getElementById('leme-manual-btn').addEventListener('click', () => {
+            updateStatus('正在手动执行...', 'orange');
+            executeRenew(true); // 传入 true 表示手动强制
+        });
+
+        document.getElementById('leme-auto-switch').addEventListener('change', (e) => {
+            isAutoEnabled = e.target.checked;
+            updateStatus(isAutoEnabled ? '监控中...' : '自动已暂停', isAutoEnabled ? '#00ff00' : '#aaa');
+        });
+    }
+
+    // 更新面板显示的文字
+    function updateDisplayTime(text) {
+        const el = document.getElementById('leme-display-time');
+        if (el) el.innerText = text;
+    }
+
+    function updateStatus(text, color) {
+        const el = document.getElementById('leme-status-text');
+        if (el) {
+            el.innerText = text;
+            if (color) el.style.color = color;
+        }
+    }
+
+    // ================= 核心逻辑区域 =================
+
+    // 1. 查找按钮
+    function findRenewButton() {
+        const buttons = document.getElementsByTagName('button');
+        for (let btn of buttons) {
+            // 匹配 type="submit" 且包含 Extend time 文字
+            if (btn.type === 'submit' && btn.innerText.includes('Extend time')) {
+                return btn;
+            }
+        }
+        return null;
+    }
+
+    // 2. 解析时间
+    function parseTime(timeStr) {
+        if (!timeStr) return 99999;
+        const parts = timeStr.trim().split(':').map(Number);
+        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        if (parts.length === 2) return parts[0] * 60 + parts[1];
+        return 99999;
+    }
+
+    // 3. 执行续期动作
+    function executeRenew(isManual = false) {
+        if (isProcessing && !isManual) return; // 如果正在处理且非手动，则跳过
+
+        const btn = findRenewButton();
+        if (!btn) {
+            updateStatus('❌ 未找到按钮!', 'red');
+            console.error('LemeHost 脚本: 未找到续期按钮');
+            return;
+        }
+
+        isProcessing = true;
+        
+        // 视觉反馈
+        btn.style.backgroundColor = '#ff4444';
+        btn.innerText = '脚本点击中...';
+        updateStatus('⚡ 正在点击...', 'orange');
+
+        // 点击
+        setTimeout(() => {
+            btn.click();
+            console.log('✅ 已触发点击事件');
+            updateStatus('✅ 点击完成，等待刷新', '#00ff00');
+            
+            // 5秒后重置状态（如果页面没刷新的话）
+            setTimeout(() => { 
+                isProcessing = false; 
+                if(!isAutoEnabled) updateStatus('自动已暂停', '#aaa');
+                else updateStatus('监控中...', '#00ff00');
+            }, 5000);
+        }, 500);
+    }
+
+    // 4. 主循环
+    function mainLoop() {
+        // 获取倒计时 DOM
+        const timerSpan = document.getElementById('countdown-free-plan');
+        
+        if (!timerSpan) {
+            updateDisplayTime('未检测到倒计时');
+            return;
+        }
+
+        const timeText = timerSpan.innerText.trim();
+        updateDisplayTime(timeText); // 更新面板时间显示
+
+        // 如果自动功能关闭，则不执行后续判断
+        if (!isAutoEnabled) return;
+
+        const remainingSeconds = parseTime(timeText);
+        
+        // 判断阈值
+        if (remainingSeconds < CONFIG.threshold && remainingSeconds > 0) {
+            console.log(`⏱️ 触发自动续期! 剩余: ${remainingSeconds}秒`);
+            executeRenew(false); // 自动执行
+        }
+    }
+
+    // ================= 启动 =================
+    // 等待页面加载一小会儿再显示面板
+    setTimeout(() => {
+        createPanel();
+        // 启动循环
+        setInterval(mainLoop, CONFIG.checkInterval);
+    }, 1500);
+
+})();
